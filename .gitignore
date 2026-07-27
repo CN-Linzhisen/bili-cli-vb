@@ -2,3 +2,4 @@ session.json
 danmaku_*.jsonl
 logs/
 *.log
+.scratch/
