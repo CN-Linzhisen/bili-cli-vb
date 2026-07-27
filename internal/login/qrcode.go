@@ -218,10 +218,8 @@ func extractSession(headers http.Header, refreshToken string) (*session.Session,
 		}
 	}
 
-	// 获取 buvid3（可能在另一个响应头中，如果上面没取到则尝试已有值）
+	// 获取 buvid3（可能在另一个响应头中，如果上面没取到则生成一个随机值）
 	if s.Buvid3 == "" {
-		// buvid3 通常在首次请求时通过 JS 生成，这里尝试从 Cookie 中获取
-		// 如果取不到，使用一个默认格式
 		for _, cookie := range headers["Set-Cookie"] {
 			if strings.HasPrefix(cookie, "buvid3=") {
 				parts := strings.SplitN(cookie, ";", 2)
@@ -232,6 +230,9 @@ func extractSession(headers http.Header, refreshToken string) (*session.Session,
 				break
 			}
 		}
+	}
+	if s.Buvid3 == "" {
+		s.Buvid3 = session.GenerateBuvid3()
 	}
 
 	if s.Sessdata == "" {

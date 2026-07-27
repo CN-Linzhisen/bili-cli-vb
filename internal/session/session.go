@@ -54,6 +54,13 @@ func Load() (*Session, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("解析凭证文件失败: %w", err)
 	}
+
+	// 确保 buvid3 不为空，空值会导致 B站 API 风控拦截
+	if s.Buvid3 == "" {
+		s.Buvid3 = GenerateBuvid3()
+		fmt.Println("注意: buvid3 为空，已自动生成")
+	}
+
 	return &s, nil
 }
 

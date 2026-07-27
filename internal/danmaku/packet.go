@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/andybalholm/brotli"
 )
 
 // Packet 表示一个完整的 B站 WebSocket 数据包
 type Packet struct {
-	Header PacketHeader
+	Header  PacketHeader
 	Payload []byte
 }
 
@@ -22,11 +24,11 @@ func ReadPacket(data []byte) (*Packet, error) {
 	}
 
 	header := PacketHeader{
-		TotalSize:      int32(binary.BigEndian.Uint32(data[0:4])),
-		HeaderLength:   int16(binary.BigEndian.Uint16(data[4:6])),
+		TotalSize:       int32(binary.BigEndian.Uint32(data[0:4])),
+		HeaderLength:    int16(binary.BigEndian.Uint16(data[4:6])),
 		ProtocolVersion: ProtocolVersion(binary.BigEndian.Uint16(data[6:8])),
-		Operation:      OperationCode(binary.BigEndian.Uint32(data[8:12])),
-		SequenceID:     int32(binary.BigEndian.Uint32(data[12:16])),
+		Operation:       OperationCode(binary.BigEndian.Uint32(data[8:12])),
+		SequenceID:      int32(binary.BigEndian.Uint32(data[12:16])),
 	}
 
 	if int32(len(data)) < header.TotalSize {
@@ -52,7 +54,7 @@ func (p *Packet) DecompressPayload() ([]byte, error) {
 	case ProtoZlib:
 		return decompressZlib(p.Payload)
 	case ProtoBrotli:
-		return nil, fmt.Errorf("brotli 压缩暂不支持，请安装 andybalholm/brotli 依赖")
+		return decompressBrotli(p.Payload)
 	default:
 		return nil, fmt.Errorf("不支持的协议版本: %d", p.Header.ProtocolVersion)
 	}
@@ -69,6 +71,16 @@ func decompressZlib(data []byte) ([]byte, error) {
 	decompressed, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("zlib 解压失败: %w", err)
+	}
+	return decompressed, nil
+}
+
+// decompressBrotli 对 brotli 压缩数据解压
+func decompressBrotli(data []byte) ([]byte, error) {
+	reader := brotli.NewReader(bytes.NewReader(data))
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("brotli 解压失败: %w", err)
 	}
 	return decompressed, nil
 }
@@ -92,7 +104,7 @@ func NewAuthPacket(uid int64, roomID int64, token string) []byte {
 	authData := map[string]interface{}{
 		"uid":      uid,
 		"roomid":   roomID,
-		"protover": 2,
+		"protover": 3,
 		"token":    token,
 		"platform": "web",
 		"type":     2,

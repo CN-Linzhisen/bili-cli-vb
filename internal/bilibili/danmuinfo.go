@@ -35,11 +35,11 @@ func FetchDanmuInfo(client *http.Client, roomID int64, sessData, buvid3 string) 
 		client = http.DefaultClient
 	}
 
-	// Wbi 签名参数
+	// Wbi 签名参数（带上 Cookie 以避免被拦截）
 	params, err := SignParams(client, map[string]string{
 		"id":       fmt.Sprintf("%d", roomID),
 		"type":     "0",
-	})
+	}, fmt.Sprintf("SESSDATA=%s; buvid3=%s", sessData, buvid3))
 	if err != nil {
 		return nil, fmt.Errorf("Wbi 签名失败: %w", err)
 	}

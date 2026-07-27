@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -13,7 +14,7 @@ import (
 )
 
 const (
-	wsURLTemplate = "wss://%s:%d/sub"
+	wsURLTemplate     = "wss://%s:%d/sub"
 	heartbeatInterval = 30 * time.Second
 	reconnectDelay    = 3 * time.Second
 	wsWriteTimeout    = 10 * time.Second
@@ -31,14 +32,15 @@ const (
 
 // RoomWatcher 管理到单个直播间的 WebSocket 连接
 type RoomWatcher struct {
-	roomID    int64
-	sessData  string
-	buvid3    string
+	roomID   int64
+	sessData string
+	buvid3   string
+	uid      string
 	danmuInfo *DanmuInfo
 
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	state    ConnState
+	conn   *websocket.Conn
+	mu     sync.Mutex
+	state  ConnState
 
 	events   chan *danmaku.DanmakuEvent
 	done     chan struct{}
@@ -46,11 +48,12 @@ type RoomWatcher struct {
 }
 
 // NewRoomWatcher 创建新的弹幕监听器
-func NewRoomWatcher(roomID int64, sessData, buvid3 string) *RoomWatcher {
+func NewRoomWatcher(roomID int64, sessData, buvid3, uid string) *RoomWatcher {
 	return &RoomWatcher{
 		roomID:   roomID,
 		sessData: sessData,
 		buvid3:   buvid3,
+		uid:      uid,
 		events:   make(chan *danmaku.DanmakuEvent, 256),
 		done:     make(chan struct{}),
 		state:    StateDisconnected,
@@ -63,6 +66,11 @@ func (rw *RoomWatcher) Events() <-chan *danmaku.DanmakuEvent {
 }
 
 // State 返回当前连接状态
+// RoomID 返回直播间ID
+func (rw *RoomWatcher) RoomID() int64 {
+	return rw.roomID
+}
+
 func (rw *RoomWatcher) State() ConnState {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
@@ -114,22 +122,56 @@ func (rw *RoomWatcher) connect() error {
 		return fmt.Errorf("未获取到弹幕服务器地址")
 	}
 
-	// 2. 建立 WebSocket 连接
-	host := info.HostList[0]
-	u := url.URL{
-		Scheme: "wss",
-		Host:   fmt.Sprintf("%s:%d", host.Host, host.WssPort),
-		Path:   "/sub",
+	// 调试：输出 getDanmuInfo 返回的完整信息
+	for i, h := range info.HostList {
+		log.Printf("getDanmuInfo host[%d]: host=%s wss_port=%d ws_port=%d", i, h.Host, h.WssPort, h.WSPort)
+	}
+	log.Printf("getDanmuInfo token=%q (len=%d)", info.Token, len(info.Token))
+
+	// 2. 建立 WebSocket 连接（带浏览器请求头）
+	var conn *websocket.Conn
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+	wsHeaders := http.Header{
+		"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+		"Origin":     []string{"https://live.bilibili.com"},
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		return fmt.Errorf("WebSocket 连接失败: %w", err)
+	// 尝试 host 列表中的每个服务器（wss_port 为 0 时回退到 443）
+	for i, hostInfo := range info.HostList {
+		wsPort := hostInfo.WssPort
+		if wsPort == 0 {
+			wsPort = 443
+		}
+		u := url.URL{
+			Scheme: "wss",
+			Host:   fmt.Sprintf("%s:%d", hostInfo.Host, wsPort),
+			Path:   "/sub",
+		}
+
+		conn, _, err = dialer.Dial(u.String(), wsHeaders)
+		if err == nil {
+			break
+		}
+		if i < len(info.HostList)-1 {
+			log.Printf("WebSocket 连接 %s 失败: %v，尝试下一个...", u.Host, err)
+		}
+	}
+	if conn == nil {
+		return fmt.Errorf("WebSocket 连接失败，已尝试所有服务器")
 	}
 	rw.conn = conn
 
-	// 3. 发送认证包
-	authPacket := danmaku.NewAuthPacket(0, rw.roomID, info.Token)
+	// 3. 发送认证包（尝试使用真实 uid）
+	uid := int64(0)
+	if rw.uid != "" {
+		if parsed, err := fmt.Sscanf(rw.uid, "%d", &uid); err != nil || parsed != 1 {
+			uid = 0
+		}
+	}
+	authPacket := danmaku.NewAuthPacket(uid, rw.roomID, info.Token)
+	log.Printf("发送认证包: uid=%d roomID=%d token=%q", uid, rw.roomID, info.Token)
 	if err := conn.WriteMessage(websocket.BinaryMessage, authPacket); err != nil {
 		conn.Close()
 		return fmt.Errorf("发送认证包失败: %w", err)
@@ -141,6 +183,7 @@ func (rw *RoomWatcher) connect() error {
 		conn.Close()
 		return fmt.Errorf("读取认证回复失败: %w", err)
 	}
+	log.Printf("收到认证回复: %d 字节", len(msg))
 
 	pkt, err := danmaku.ReadPacket(msg)
 	if err != nil {
@@ -242,7 +285,6 @@ func (rw *RoomWatcher) handleMessage(msg []byte) {
 
 	case danmaku.OpCommand:
 		// 如果是压缩过的，payload 可能包含多个包
-		// 尝试将解压后的数据作为多包序列解析
 		rw.parseCommandPackets(payload)
 
 	default:
@@ -255,7 +297,6 @@ func (rw *RoomWatcher) parseCommandPackets(data []byte) {
 	// 尝试将整个数据作为一个 JSON 解析（未压缩/单包情况）
 	var raw json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		// 成功：是一个单独的 JSON
 		rw.handleCommandJSON(raw)
 		return
 	}
@@ -297,7 +338,7 @@ func (rw *RoomWatcher) handleCommandJSON(raw json.RawMessage) {
 	}
 
 	if !danmaku.IsDanmakuCmd(cmdMap) {
-		return // 只关心弹幕
+		return
 	}
 
 	event, err := danmaku.ParseDanmakuEvent(cmdMap, rw.roomID)
@@ -306,11 +347,9 @@ func (rw *RoomWatcher) handleCommandJSON(raw json.RawMessage) {
 		return
 	}
 
-	// 非阻塞发送到事件通道
 	select {
 	case rw.events <- event:
 	default:
-		// 通道满时丢弃（缓冲区溢出保护）
 	}
 }
 
@@ -324,7 +363,6 @@ func (rw *RoomWatcher) heartbeatLoop() {
 		case <-rw.done:
 			return
 		case <-ticker.C:
-			// 心跳使用写超时 + 锁保护
 			rw.mu.Lock()
 			conn := rw.conn
 			rw.mu.Unlock()

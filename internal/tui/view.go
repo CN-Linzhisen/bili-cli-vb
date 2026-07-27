@@ -37,6 +37,8 @@ var (
 			Foreground(lipgloss.Color("#FFD700"))
 )
 
+const maxUsernameWidth = 20 // 最大用户名显示宽度（终端列数）
+
 // View 实现 tea.Model.View
 func (m *Model) View() string {
 	switch m.state {
@@ -84,8 +86,8 @@ func (m *Model) connectingView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("🎬 BiliBili 直播弹幕监控"))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("正在连接到直播间 %d...\n", m.roomID))
-	b.WriteString("\n请稍候...")
+	b.WriteString(m.connStatus)
+	b.WriteString("\n\n请稍候...")
 	return b.String()
 }
 
@@ -95,10 +97,45 @@ func (m *Model) connectedView() string {
 		return "初始化中..."
 	}
 
-	// 状态栏
 	statusBar := m.renderStatusBar()
 
-	return m.viewport.View() + "\n" + statusBar
+	content := m.viewport.View()
+	if content == "" && len(m.danmakuList) > 0 {
+		content = m.renderDanmakuList()
+	}
+
+	return content + "\n" + statusBar
+}
+
+// formatUsername 格式化用户名，处理 CJK 字符宽度
+func formatUsername(name string) string {
+	if name == "" {
+		return strings.Repeat(" ", maxUsernameWidth)
+	}
+
+	// 先按 rune 截断（最多允许 15 个字符，防止过长）
+	runes := []rune(name)
+	if len(runes) > 15 {
+		runes = runes[:15]
+	}
+	name = string(runes)
+
+	// 计算实际显示宽度，用空格补齐
+	displayWidth := lipgloss.Width(name)
+	if displayWidth > maxUsernameWidth {
+		// 太长了，从尾部截断
+		for len(runes) > 0 && lipgloss.Width(string(runes)) > maxUsernameWidth-1 {
+			runes = runes[:len(runes)-1]
+		}
+		name = string(runes) + "…"
+		displayWidth = lipgloss.Width(name)
+	}
+
+	if displayWidth < maxUsernameWidth {
+		name += strings.Repeat(" ", maxUsernameWidth-displayWidth)
+	}
+
+	return name
 }
 
 // renderDanmakuList 渲染弹幕列表
@@ -107,7 +144,6 @@ func (m *Model) renderDanmakuList() string {
 		return "等待弹幕..."
 	}
 
-	// 只显示最近的弹幕（防止内存溢出）
 	start := 0
 	const maxDisplay = 500
 	if len(m.danmakuList) > maxDisplay {
@@ -123,19 +159,14 @@ func (m *Model) renderDanmakuList() string {
 
 		// 时间
 		b.WriteString(timeStyle.Render(line.Time))
-
-		// 用户名
-		username := line.Username
-		if len(username) > 12 {
-			username = username[:12]
-		}
 		b.WriteString(" ")
-		b.WriteString(userStyle.Render(fmt.Sprintf("%-12s", username)))
+
+		// 用户名（自适应 CJK 宽度）
+		b.WriteString(userStyle.Render(formatUsername(line.Username)))
 		b.WriteString(" ")
 
 		// 弹幕内容
 		if line.Highlight {
-			// 高亮显示
 			style := highlightStyle.Foreground(lipgloss.Color(line.Color))
 			b.WriteString(style.Render(line.Content))
 		} else {
@@ -153,7 +184,6 @@ func (m *Model) renderStatusBar() string {
 	countInfo := fmt.Sprintf(" 弹幕数: %d ", m.danmakuCount)
 	quitInfo := " [q]退出 "
 
-	// 计算分隔
 	content := roomInfo + statusInfo + countInfo
 	padding := m.width - lipgloss.Width(content) - lipgloss.Width(quitInfo)
 	if padding < 1 {

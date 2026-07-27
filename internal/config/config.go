@@ -10,19 +10,30 @@ import (
 
 const configFile = "config.json"
 
+// OpenLiveConfig B站开放平台配置（用于弹幕监控）
+type OpenLiveConfig struct {
+	AppID          int64  `json:"app_id"`
+	AccessKeyID    string `json:"access_key_id"`
+	AccessKeySecret string `json:"access_key_secret"`
+	Code           string `json:"code"`
+}
+
 // Config 是应用程序的用户配置
 type Config struct {
-	Keywords   []string `json:"keywords"`    // 监控关键词列表
-	DanmakuLog bool     `json:"danmaku_log"` // 是否保存弹幕日志
-	LogDir     string   `json:"log_dir"`     // 日志目录
+	Keywords         []string        `json:"keywords"`           // 监控关键词列表
+	DanmakuLog       bool            `json:"danmaku_log"`        // 是否保存弹幕日志
+	LogDir           string          `json:"log_dir"`            // 日志目录
+	LogRetentionDays int             `json:"log_retention_days"` // 日志保留天数（默认 7）
+	OpenLive         *OpenLiveConfig `json:"open_live,omitempty"` // 开放平台配置（可选）
 }
 
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		Keywords:   []string{"抽奖", "红包", "感谢", "主播"},
-		DanmakuLog: true,
-		LogDir:     "./logs",
+		Keywords:         []string{"抽奖", "红包", "感谢", "主播"},
+		DanmakuLog:       true,
+		LogDir:           "./logs",
+		LogRetentionDays: 7,
 	}
 }
 

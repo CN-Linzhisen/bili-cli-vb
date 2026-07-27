@@ -20,17 +20,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 检查并获取登录凭证
-	sess := ensureLoggedIn()
-	if sess == nil {
-		os.Exit(1)
+	// 检查并获取登录凭证（开放平台不需要 B站 Cookie 登录）
+	var sess *session.Session
+	if cfg.OpenLive == nil {
+		sess = ensureLoggedIn()
+		if sess == nil {
+			os.Exit(1)
+		}
 	}
 
-	// 初始化 JSONL 日志（roomID 在进入房间后设置）
+	// 初始化 JSONL 日志
 	jsonlLogger := logger.NewLogger(cfg.LogDir)
+	if cfg.LogRetentionDays > 0 {
+		jsonlLogger.SetRetentionDays(cfg.LogRetentionDays)
+	}
 
 	// 启动 TUI
-	model := tui.NewModel(sess, cfg.Keywords, jsonlLogger)
+	model := tui.NewModel(sess, cfg, jsonlLogger)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	model.SetProgram(p)
 
@@ -68,3 +74,4 @@ func ensureLoggedIn() *session.Session {
 	}
 	return sess
 }
+
